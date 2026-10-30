@@ -1,14 +1,14 @@
 "use client";
 
-import { Info } from "@openstatus/icons";
+import { Info, Success } from "@openstatus/icons";
 import { useQuery } from "@tanstack/react-query";
 import { useParams } from "next/navigation";
 
 import { Link } from "@/components/common/link";
 import { Note } from "@/components/common/note";
 import {
-  EmptyStateContainer,
   EmptyStateDescription,
+  EmptyStateMedia,
   EmptyStateTitle,
 } from "@/components/content/empty-state";
 import {
@@ -20,14 +20,15 @@ import {
 } from "@/components/content/section";
 import { columns } from "@/components/data-table/incidents/columns";
 import { DataTable } from "@/components/ui/data-table/data-table";
+import { DataTableEmpty } from "@/components/ui/data-table/data-table-empty";
 import { DataTablePaginationSimple } from "@/components/ui/data-table/data-table-pagination";
 import { useTRPC } from "@/lib/trpc/client";
 
 export default function Page() {
   const { id } = useParams<{ id: string }>();
   const trpc = useTRPC();
-  const { data: incidents } = useQuery(
-    trpc.incident.list.queryOptions({
+  const { data: monitorIncidents } = useQuery(
+    trpc.monitorIncident.list.queryOptions({
       monitorId: Number.parseInt(id),
     }),
   );
@@ -35,15 +36,15 @@ export default function Page() {
     trpc.monitor.get.queryOptions({ id: Number.parseInt(id) }),
   );
 
-  if (!incidents || !monitor) return null;
+  if (!monitorIncidents || !monitor) return null;
 
   return (
     <SectionGroup>
       <Note color="info">
         <Info />
         <p>
-          Incidents are automatically created when a monitor detects downtime.
-          To communicate updates to your users, use Status Reports on a{" "}
+          Downtime is recorded automatically when a monitor fails. To tell your
+          users, use Status Reports on a{" "}
           <Link href="/status-pages">Status Page</Link>.
         </p>
       </Note>
@@ -60,20 +61,23 @@ export default function Page() {
             )}
           </SectionDescription>
         </SectionHeader>
-        {incidents.length === 0 ? (
-          <EmptyStateContainer>
-            <EmptyStateTitle>No incidents</EmptyStateTitle>
-            <EmptyStateDescription>
-              No incidents found for this monitor.
-            </EmptyStateDescription>
-          </EmptyStateContainer>
-        ) : (
-          <DataTable
-            columns={columns}
-            data={incidents}
-            paginationComponent={DataTablePaginationSimple}
-          />
-        )}
+        <DataTable
+          columns={columns}
+          data={monitorIncidents}
+          paginationComponent={DataTablePaginationSimple}
+          emptyState={
+            <DataTableEmpty>
+              <EmptyStateMedia variant="success">
+                <Success />
+              </EmptyStateMedia>
+              <EmptyStateTitle>No downtime recorded</EmptyStateTitle>
+              <EmptyStateDescription>
+                A failed check opens a downtime entry here and alerts the
+                channels linked to this monitor. Nothing has failed so far.
+              </EmptyStateDescription>
+            </DataTableEmpty>
+          }
+        />
       </Section>
     </SectionGroup>
   );

@@ -66,6 +66,7 @@ export default defineConfig({
         "apps/server/src/routes/rpc/handlers/status-report/**",
         "apps/server/src/routes/rpc/handlers/maintenance/**",
         "apps/server/src/routes/rpc/handlers/notification/**",
+        "apps/server/src/routes/rpc/handlers/incident/**",
         "apps/server/src/routes/slack/interactions.ts",
       ],
       excludeFiles: [
@@ -125,7 +126,7 @@ export default defineConfig({
       excludeFiles: ["**/__tests__/**", "**/*.test.ts"],
       rules: {
         "openstatus/services-mutation-guards": "error",
-        // apps/workflows runs this on Deno, and it stays Edge-safe by design.
+        // The package stays Edge-safe by design.
         "no-restricted-imports": [
           "error",
           {

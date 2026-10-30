@@ -1,12 +1,20 @@
 "use client";
 
-import { Theme } from "@openstatus/icons";
+import { ExternalLink, StatusPage, Theme } from "@openstatus/icons";
+import { Button } from "@openstatus/ui/components/ui/button";
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 
 import { NoteButton } from "@/components/common/note";
 import { NoteDismissible } from "@/components/common/note-dismissible";
 import {
+  EmptyStateActions,
+  EmptyStateDescription,
+  EmptyStateMedia,
+  EmptyStateTitle,
+} from "@/components/content/empty-state";
+import {
+  Section,
   SectionDescription,
   SectionGroup,
   SectionHeader,
@@ -14,6 +22,7 @@ import {
 } from "@/components/content/section";
 import { getColumns } from "@/components/data-table/status-pages/columns";
 import { DataTable } from "@/components/ui/data-table/data-table";
+import { DataTableEmpty } from "@/components/ui/data-table/data-table-empty";
 import { DataTablePaginationSimple } from "@/components/ui/data-table/data-table-pagination";
 import { DataTableSkeleton } from "@/components/ui/data-table/data-table-skeleton";
 import { useDeploymentConfig } from "@/lib/deployment-context";
@@ -37,17 +46,42 @@ export function Client() {
           </Link>
         </NoteButton>
       </NoteDismissible>
-      <SectionHeader>
-        <SectionTitle>Status Pages</SectionTitle>
-        <SectionDescription>
-          Create and manage your status pages.
-        </SectionDescription>
+      <Section>
+        <SectionHeader>
+          <SectionTitle>Status Pages</SectionTitle>
+          <SectionDescription>
+            Create and manage your status pages.
+          </SectionDescription>
+        </SectionHeader>
         <DataTable
           columns={getColumns(statusPageBaseUrl)}
           data={statusPages}
           paginationComponent={DataTablePaginationSimple}
+          emptyState={
+            <DataTableEmpty>
+              <EmptyStateMedia>
+                <StatusPage />
+              </EmptyStateMedia>
+              <EmptyStateTitle>No status pages yet</EmptyStateTitle>
+              <EmptyStateDescription>
+                A status page shows the health of your components to your users,
+                with every report and maintenance posted on it.
+              </EmptyStateDescription>
+              <EmptyStateActions>
+                <Button size="sm" asChild>
+                  <Link href="/status-pages/create">Create status page</Link>
+                </Button>
+                <Button size="sm" variant="outline" asChild>
+                  <Link href="https://status.openstatus.dev" target="_blank">
+                    <ExternalLink />
+                    See an example
+                  </Link>
+                </Button>
+              </EmptyStateActions>
+            </DataTableEmpty>
+          }
         />
-      </SectionHeader>
+      </Section>
     </SectionGroup>
   );
 }

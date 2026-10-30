@@ -7,6 +7,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { Link } from "@/components/common/link";
 import { TableCellLink } from "@/components/data-table/table-cell-link";
 
+import { TableCellEmpty } from "../table-cell-empty";
 import { DataTableRowActions } from "./data-table-row-actions";
 
 type StatusPage = RouterOutputs["page"]["list"][number];
@@ -38,7 +39,7 @@ export function getColumns(
       cell: ({ row }) => {
         const value = row.getValue("icon");
         if (!value || typeof value !== "string")
-          return <span className="text-muted-foreground">-</span>;
+          return <TableCellEmpty>No favicon</TableCellEmpty>;
         return (
           <img
             src={`${value}`}
@@ -80,7 +81,7 @@ export function getColumns(
       cell: ({ row }) => {
         const value = row.getValue("domain");
         if (typeof value !== "string")
-          return <span className="text-muted-foreground">-</span>;
+          return <TableCellEmpty>No domain</TableCellEmpty>;
         return (
           <Link href={"#"} className="font-mono">
             {value}

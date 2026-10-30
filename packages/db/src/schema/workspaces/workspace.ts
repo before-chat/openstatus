@@ -21,6 +21,8 @@ export const workspace = sqliteTable(
     plan: text("plan", { enum: workspacePlans }),
     endsAt: integer("ends_at", { mode: "timestamp" }),
     paidUntil: integer("paid_until", { mode: "timestamp" }),
+    trialEndsAt: integer("trial_ends_at", { mode: "timestamp" }),
+    trialedAt: integer("trialed_at", { mode: "timestamp" }),
     limits: text("limits").default("{}").notNull(),
 
     workosOrganizationId: text("workos_organization_id").unique(),

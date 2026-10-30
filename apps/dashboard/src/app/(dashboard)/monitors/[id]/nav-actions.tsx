@@ -17,6 +17,7 @@ import { useParams, usePathname, useRouter } from "next/navigation";
 import { useState } from "react";
 import { toast } from "sonner";
 
+import { MonitorStatusDot } from "@/components/common/monitor-status-dot";
 import { DataTableSheetTest } from "@/components/data-table/response-logs/data-table-sheet-test";
 import { QuickActions } from "@/components/dropdowns/quick-actions";
 import { NavFeedback } from "@/components/nav/nav-feedback";
@@ -67,6 +68,14 @@ export function NavActions() {
     }),
   );
 
+  const updateMonitorsMutation = useMutation(
+    trpc.monitor.updateMonitors.mutationOptions({
+      onSuccess: () => {
+        queryClient.invalidateQueries({ queryKey: trpc.monitor.pathKey() });
+      },
+    }),
+  );
+
   const testHttpMutation = useMutation(trpc.checker.testHttp.mutationOptions());
   const testTcpMutation = useMutation(trpc.checker.testTcp.mutationOptions());
   const testDnsMutation = useMutation(trpc.checker.testDns.mutationOptions());
@@ -77,8 +86,28 @@ export function NavActions() {
   const curlCommand =
     monitor?.jobType === "http" ? buildCurlCommand(monitor) : null;
 
+  function setActive(active: boolean) {
+    const promise = updateMonitorsMutation.mutateAsync({
+      ids: [Number.parseInt(id)],
+      active,
+    });
+    toast.promise(promise, {
+      loading: active ? "Resuming monitor..." : "Pausing monitor...",
+      success: active ? "Monitor resumed" : "Monitor paused",
+      error: (error) => {
+        if (isTRPCClientError(error)) {
+          return error.message;
+        }
+        return active ? "Failed to resume monitor" : "Failed to pause monitor";
+      },
+    });
+  }
+
+  const hiddenAction = monitor?.active ? "resume" : "pause";
   const actions = getActions({
     edit: () => router.push(`/monitors/${id}/edit`),
+    pause: () => setActive(false),
+    resume: () => setActive(true),
     "copy-id": async () => {
       await navigator.clipboard.writeText(id);
       toast.success("Monitor ID copied to clipboard");
@@ -104,7 +133,11 @@ export function NavActions() {
         },
       });
     },
-  }).filter((action) => action.id !== "copy-curl" || Boolean(curlCommand));
+  }).filter(
+    (action) =>
+      action.id !== hiddenAction &&
+      (action.id !== "copy-curl" || Boolean(curlCommand)),
+  );
 
   async function testAction() {
     if (monitor?.jobType === "http") {
@@ -212,37 +245,7 @@ export function NavActions() {
     <div className="flex items-center gap-2 text-sm">
       <NavFeedback />
       <div className="text-muted-foreground hidden font-medium lg:inline-block">
-        <Tooltip>
-          <TooltipTrigger asChild>
-            {!monitor.active ? (
-              <span className="relative ml-1.5 inline-flex">
-                <span className="bg-muted-foreground/70 relative inline-flex h-2.5 w-2.5 rounded-full" />
-              </span>
-            ) : monitor.status === "active" ? (
-              <span className="relative ml-1.5 inline-flex">
-                <span className="bg-success/80 absolute inline-flex h-full w-full animate-ping rounded-full opacity-75" />
-                <span className="bg-success relative inline-flex h-2.5 w-2.5 rounded-full" />
-              </span>
-            ) : monitor.status === "error" ? (
-              <span className="relative ml-1.5 inline-flex">
-                <span className="bg-destructive relative inline-flex h-2.5 w-2.5 rounded-full" />
-              </span>
-            ) : (
-              <span className="relative ml-1.5 inline-flex">
-                <span className="bg-warning relative inline-flex h-2.5 w-2.5 rounded-full" />
-              </span>
-            )}
-          </TooltipTrigger>
-          <TooltipContent>
-            {!monitor.active
-              ? "Inactive"
-              : monitor.status === "active"
-                ? "Normal"
-                : monitor.status === "error"
-                  ? "Failing"
-                  : "Degraded"}
-          </TooltipContent>
-        </Tooltip>
+        <MonitorStatusDot monitor={monitor} className="ml-1.5" />
       </div>
       <TooltipProvider>
         <Tooltip>

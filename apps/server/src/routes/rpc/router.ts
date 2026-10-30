@@ -1,5 +1,6 @@
 import { createConnectRouter } from "@connectrpc/connect";
 import { HealthService } from "@openstatus/proto/health/v1";
+import { IncidentService } from "@openstatus/proto/incident/v1";
 import { MaintenanceService } from "@openstatus/proto/maintenance/v1";
 import { MonitorService } from "@openstatus/proto/monitor/v1";
 import { NotificationService } from "@openstatus/proto/notification/v1";
@@ -8,6 +9,7 @@ import { StatusPageService } from "@openstatus/proto/status_page/v1";
 import { StatusReportService } from "@openstatus/proto/status_report/v1";
 
 import { healthServiceImpl } from "./handlers/health";
+import { incidentServiceImpl } from "./handlers/incident";
 import { maintenanceServiceImpl } from "./handlers/maintenance";
 import { monitorServiceImpl } from "./handlers/monitor";
 import { notificationServiceImpl } from "./handlers/notification";
@@ -29,7 +31,7 @@ import {
  * 2. loggingInterceptor - Logs requests/responses with duration
  * 3. authInterceptor - Validates API key and sets workspace context
  * 4. validationInterceptor - Validates request messages using protovalidate
- * 5. trackingInterceptor - Fires OpenPanel events on success
+ * 5. trackingInterceptor - Fires OpenPanel `api_request` for authenticated, validated calls + domain events on success
  */
 export const routes = createConnectRouter({
   interceptors: [
@@ -46,4 +48,5 @@ export const routes = createConnectRouter({
   .service(StatusPageService, statusPageServiceImpl)
   .service(MaintenanceService, maintenanceServiceImpl)
   .service(NotificationService, notificationServiceImpl)
-  .service(PrivateLocationService, privateLocationServiceImpl);
+  .service(PrivateLocationService, privateLocationServiceImpl)
+  .service(IncidentService, incidentServiceImpl);

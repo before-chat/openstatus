@@ -4,17 +4,17 @@ import { db, desc, eq } from "@openstatus/db";
 import { auditLog, page, statusReport } from "@openstatus/db/src/schema";
 import { resourceMetadataUrl } from "@openstatus/services/oauth";
 import { SEEDED_WORKSPACE_TEAM_ID } from "@openstatus/services/test/fixtures";
-import type { MockFn } from "@openstatus/test-utils";
-import { expect } from "@std/expect";
+import { Hono } from "hono";
+import { requestId } from "hono/request-id";
 import {
   afterAll,
   beforeAll,
   beforeEach,
   describe,
+  expect,
   test,
-} from "@std/testing/bdd";
-import { Hono } from "hono";
-import { requestId } from "hono/request-id";
+  type Mock,
+} from "vitest";
 
 import { handleError } from "../../libs/errors";
 import { oauthConfigFromEnv } from "../oauth/config";
@@ -119,17 +119,29 @@ describe("MCP transport", () => {
     const tools = (body.result as { tools: { name: string }[] }).tools;
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([
+      "add_incident_note",
+      "add_maintenance_update",
       "add_status_report_update",
+      "approve_postmortem",
       "create_maintenance",
       "create_status_report",
+      "declare_incident",
+      "delete_maintenance_update",
+      "delete_status_report_update",
+      "draft_postmortem",
       "get_audit_log",
       "get_content_page",
       "get_doc_page",
+      "get_incident",
       "get_monitor",
       "get_monitor_status",
       "get_monitor_summary",
+      "get_postmortem",
       "get_response_log",
+      "get_status_report",
+      "get_workspace",
       "list_audit_logs",
+      "list_incidents",
       "list_maintenances",
       "list_monitors",
       "list_notifications",
@@ -138,10 +150,15 @@ describe("MCP transport", () => {
       "list_response_logs",
       "list_status_pages",
       "list_status_reports",
+      "resolve_incident",
       "resolve_status_report",
       "search_content",
       "search_docs",
+      "set_incident_status",
+      "update_incident",
+      "update_maintenance_update",
       "update_status_report",
+      "update_status_report_update",
     ]);
   });
 
@@ -240,7 +257,7 @@ describe("MCP transport", () => {
  * spies live on `globalThis.__analyticsSpies`.
  */
 const analyticsSpies = (globalThis as Record<string, unknown>)
-  .__analyticsSpies as { track: MockFn; setupAnalytics: MockFn };
+  .__analyticsSpies as { track: Mock; setupAnalytics: Mock };
 
 /**
  * Tracking is fire-and-forget — `track` runs in a microtask chained off
@@ -271,6 +288,8 @@ describe("MCP transport — analytics", () => {
       unknown
     >;
     expect(identify?.userId).toBe(`api_${SEEDED_WORKSPACE_TEAM_ID}`);
+    expect(identify?.workspaceId).toBe(`${SEEDED_WORKSPACE_TEAM_ID}`);
+    expect(identify?.source).toBe("mcp");
 
     const event = analyticsSpies.track.mock.calls[0]?.[0] as Record<
       string,

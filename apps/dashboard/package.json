@@ -3,12 +3,13 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "next dev --turbopack",
+    "dev": "PORT=${PORT:-3001} next dev --turbopack",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
     "check": "tsc --noEmit",
-    "tsc": "tsc --noEmit"
+    "tsc": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "@ai-sdk/react": "catalog:",
@@ -69,7 +70,6 @@
     "@radix-ui/react-slot": "catalog:",
     "@radix-ui/react-tooltip": "catalog:",
     "@sentry/nextjs": "catalog:",
-    "@stripe/stripe-js": "catalog:",
     "@tanstack/react-query": "catalog:",
     "@tanstack/react-table": "catalog:",
     "@trpc/client": "catalog:",
@@ -84,6 +84,7 @@
     "cmdk": "catalog:",
     "date-fns": "catalog:",
     "lucide-react": "catalog:",
+    "mailchecker": "catalog:",
     "next": "catalog:",
     "next-auth": "catalog:",
     "next-themes": "catalog:",
@@ -106,6 +107,7 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@openstatus/test-utils": "workspace:*",
     "@tailwindcss/postcss": "catalog:",
     "@tailwindcss/typography": "catalog:",
     "@types/dom-speech-recognition": "catalog:",
@@ -115,6 +117,7 @@
     "shadcn": "catalog:",
     "tailwindcss": "catalog:",
     "tw-animate-css": "catalog:",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }

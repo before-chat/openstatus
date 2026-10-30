@@ -8,6 +8,7 @@ import { defaultTb, getReadDb, type ServiceContext } from "../context";
 import { ForbiddenError, NotFoundError } from "../errors";
 import {
   dayCoverage,
+  dayWindow,
   durationDowntimeMs,
   type Event,
   floorPct,
@@ -104,8 +105,8 @@ function durationMonth(
   // downtime is clipped to the checked days (a paused stretch can't exceed
   // the denominator) and the in-progress day is clamped to elapsed time so
   // 2h down on the 2nd isn't diluted by the rest of today
-  const dayStarts = withChecks.map((d) => Date.parse(`${d.day}T00:00:00.000Z`));
-  const { segments, totalMs } = dayCoverage(dayStarts, nowMs);
+  const windows = withChecks.map((d) => dayWindow(d.day));
+  const { segments, totalMs } = dayCoverage(windows, nowMs);
   if (segments.length === 0 || totalMs <= 0) return null;
   const window = {
     start: segments[0].start,
@@ -181,7 +182,7 @@ export async function getUptimeHistory(args: {
         },
       },
       pageComponents: {
-        with: { monitor: { with: { incidents: true } } },
+        with: { monitor: { with: { monitorIncidents: true } } },
         orderBy: (components, { asc }) => asc(components.order),
       },
     },
@@ -295,7 +296,7 @@ export async function getUptimeHistory(args: {
   const rows: UptimeHistoryRow[] = components.map((c) => {
     const events = getEvents({
       maintenances: _page.maintenances,
-      incidents: c.monitor?.incidents ?? [],
+      incidents: c.monitor?.monitorIncidents ?? [],
       reports: _page.statusReports,
       pageComponentId: c.id,
       monitorId: c.monitorId ?? undefined,

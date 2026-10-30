@@ -14,6 +14,57 @@ const PUBLIC_CACHE = 300; // 5 * 60 = 300s = 5m
 const DEV_CACHE = 10 * 60; // 10m
 const REVALIDATE = env.NODE_ENV === "development" ? DEV_CACHE : 0;
 
+// Cheaper than a Tinybird 400 round trip for a zone ClickHouse won't know.
+const timeZoneValidity = new Map<string, boolean>();
+
+export function isValidTimeZone(timeZone: string): boolean {
+  // Intl also takes `+05:30`-style offsets; ClickHouse only knows zone names.
+  if (/^[+-]/.test(timeZone)) return false;
+  let valid = timeZoneValidity.get(timeZone);
+  if (valid === undefined) {
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone });
+      valid = true;
+    } catch (error) {
+      if (!(error instanceof RangeError)) throw error;
+      valid = false;
+    }
+    timeZoneValidity.set(timeZone, valid);
+  }
+  return valid;
+}
+
+// 15-minute buckets regroup into local days for every IANA zone: all current
+// offsets are multiples of 15 minutes.
+export const status15mParameters = z.object({
+  monitorIds: z.string().array(),
+  timezone: z
+    .string()
+    .refine(isValidTimeZone, "timezone must be an IANA zone name")
+    .prefault("UTC"),
+});
+
+/**
+ * Same columns as the 45d pipes. `day` is the local calendar date re-keyed as
+ * UTC midnight, the convention day-keyed consumers already read — a Berlin
+ * 2026-10-14 stays "2026-10-14", not the 22:00Z instant of local midnight.
+ * `monitorId` is a String column in the http datasource and Int32 elsewhere,
+ * so the non-http getters pass `z.coerce.string()`.
+ */
+export function status15mShape(monitorId: z.ZodType<string>) {
+  return z.object({
+    day: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/)
+      .transform((val) => new Date(`${val}T00:00:00.000Z`).toISOString()),
+    count: z.number().prefault(0),
+    ok: z.number().prefault(0),
+    degraded: z.number().prefault(0),
+    error: z.number().prefault(0),
+    monitorId,
+  });
+}
+
 // Daily-aggregate columns shared by the external-status history pipes (page-
 // level and per-component). One shape so the `day` GMT-parse can't drift.
 const externalStatusHistoryDailyShape = {
@@ -807,6 +858,16 @@ export class OSTinybird {
     });
   }
 
+  /** 15m buckets regrouped into days of `timezone`; see {@link status15mShape}. */
+  public get httpStatus15m() {
+    return this.tb.buildPipe({
+      pipe: "endpoint__http_status_15m__v0",
+      parameters: status15mParameters,
+      data: status15mShape(z.string()),
+      opts: { next: { revalidate: REVALIDATE } },
+    });
+  }
+
   public get httpStatus45d() {
     return this.tb.buildPipe({
       pipe: "endpoint__http_status_45d__v1",
@@ -1374,6 +1435,16 @@ export class OSTinybird {
     });
   }
 
+  /** 15m buckets regrouped into days of `timezone`; see {@link status15mShape}. */
+  public get tcpStatus15m() {
+    return this.tb.buildPipe({
+      pipe: "endpoint__tcp_status_15m__v0",
+      parameters: status15mParameters,
+      data: status15mShape(z.coerce.string()),
+      opts: { next: { revalidate: REVALIDATE } },
+    });
+  }
+
   public get tcpStatus45d() {
     return this.tb.buildPipe({
       pipe: "endpoint__tcp_status_45d__v1",
@@ -1710,6 +1781,7 @@ export class OSTinybird {
       parameters: z.object({
         monitorId: z.string(),
         regions: z.array(z.enum(monitorRegions).or(z.string())).optional(),
+        interval: z.int().optional(),
         fromDate: z.string().optional(),
         toDate: z.string().optional(),
       }),
@@ -1722,6 +1794,8 @@ export class OSTinybird {
       pipe: "endpoint__icmp_metrics_latency_7d__v0",
       parameters: z.object({
         monitorId: z.string(),
+        regions: z.array(z.enum(monitorRegions).or(z.string())).optional(),
+        interval: z.int().optional(),
         fromDate: z.string().optional(),
         toDate: z.string().optional(),
       }),
@@ -1734,6 +1808,8 @@ export class OSTinybird {
       pipe: "endpoint__icmp_metrics_latency_30d__v0",
       parameters: z.object({
         monitorId: z.string(),
+        regions: z.array(z.enum(monitorRegions).or(z.string())).optional(),
+        interval: z.int().optional(),
         fromDate: z.string().optional(),
         toDate: z.string().optional(),
       }),
@@ -1746,6 +1822,8 @@ export class OSTinybird {
       pipe: "endpoint__icmp_metrics_latency_90d__v0",
       parameters: z.object({
         monitorId: z.string(),
+        regions: z.array(z.enum(monitorRegions).or(z.string())).optional(),
+        interval: z.int().optional(),
         fromDate: z.string().optional(),
         toDate: z.string().optional(),
       }),
@@ -1770,6 +1848,16 @@ export class OSTinybird {
         p95Latency: z.int(),
         p99Latency: z.int(),
       }),
+      opts: { next: { revalidate: REVALIDATE } },
+    });
+  }
+
+  /** 15m buckets regrouped into days of `timezone`; see {@link status15mShape}. */
+  public get icmpStatus15m() {
+    return this.tb.buildPipe({
+      pipe: "endpoint__icmp_status_15m__v0",
+      parameters: status15mParameters,
+      data: status15mShape(z.coerce.string()),
       opts: { next: { revalidate: REVALIDATE } },
     });
   }
@@ -2181,6 +2269,7 @@ export class OSTinybird {
       parameters: z.object({
         monitorId: z.string(),
         regions: z.array(z.enum(monitorRegions).or(z.string())).optional(),
+        interval: z.int().optional(),
         fromDate: z.string().optional(),
         toDate: z.string().optional(),
       }),
@@ -2193,6 +2282,8 @@ export class OSTinybird {
       pipe: "endpoint__grpc_metrics_latency_7d__v0",
       parameters: z.object({
         monitorId: z.string(),
+        regions: z.array(z.enum(monitorRegions).or(z.string())).optional(),
+        interval: z.int().optional(),
         fromDate: z.string().optional(),
         toDate: z.string().optional(),
       }),
@@ -2205,6 +2296,8 @@ export class OSTinybird {
       pipe: "endpoint__grpc_metrics_latency_30d__v0",
       parameters: z.object({
         monitorId: z.string(),
+        regions: z.array(z.enum(monitorRegions).or(z.string())).optional(),
+        interval: z.int().optional(),
         fromDate: z.string().optional(),
         toDate: z.string().optional(),
       }),
@@ -2217,6 +2310,8 @@ export class OSTinybird {
       pipe: "endpoint__grpc_metrics_latency_90d__v0",
       parameters: z.object({
         monitorId: z.string(),
+        regions: z.array(z.enum(monitorRegions).or(z.string())).optional(),
+        interval: z.int().optional(),
         fromDate: z.string().optional(),
         toDate: z.string().optional(),
       }),
@@ -2241,6 +2336,16 @@ export class OSTinybird {
         p95Latency: z.int(),
         p99Latency: z.int(),
       }),
+      opts: { next: { revalidate: REVALIDATE } },
+    });
+  }
+
+  /** 15m buckets regrouped into days of `timezone`; see {@link status15mShape}. */
+  public get grpcStatus15m() {
+    return this.tb.buildPipe({
+      pipe: "endpoint__grpc_status_15m__v0",
+      parameters: status15mParameters,
+      data: status15mShape(z.coerce.string()),
       opts: { next: { revalidate: REVALIDATE } },
     });
   }
@@ -2683,6 +2788,8 @@ export class OSTinybird {
       pipe: "endpoint__http_metrics_latency_1d__v1",
       parameters: z.object({
         monitorId: z.string(),
+        regions: z.array(z.enum(monitorRegions).or(z.string())).optional(),
+        interval: z.int().optional(),
         fromDate: z.string().optional(),
         toDate: z.string().optional(),
       }),
@@ -2702,6 +2809,8 @@ export class OSTinybird {
       pipe: "endpoint__http_metrics_latency_7d__v1",
       parameters: z.object({
         monitorId: z.string(),
+        regions: z.array(z.enum(monitorRegions).or(z.string())).optional(),
+        interval: z.int().optional(),
         fromDate: z.string().optional(),
         toDate: z.string().optional(),
       }),
@@ -2743,6 +2852,7 @@ export class OSTinybird {
       parameters: z.object({
         monitorId: z.string(),
         regions: z.array(z.enum(monitorRegions).or(z.string())).optional(),
+        interval: z.int().optional(),
         fromDate: z.string().optional(),
         toDate: z.string().optional(),
       }),
@@ -2762,6 +2872,8 @@ export class OSTinybird {
       pipe: "endpoint__tcp_metrics_latency_7d__v1",
       parameters: z.object({
         monitorId: z.string(),
+        regions: z.array(z.enum(monitorRegions).or(z.string())).optional(),
+        interval: z.int().optional(),
         fromDate: z.string().optional(),
         toDate: z.string().optional(),
       }),
@@ -2968,6 +3080,8 @@ export class OSTinybird {
       pipe: "endpoint__dns_metrics_latency_7d__v0",
       parameters: z.object({
         monitorId: z.string(),
+        regions: z.array(z.enum(monitorRegions).or(z.string())).optional(),
+        interval: z.int().optional(),
         fromDate: z.string().optional(),
         toDate: z.string().optional(),
       }),
@@ -3343,6 +3457,7 @@ export class OSTinybird {
       parameters: z.object({
         monitorId: z.string(),
         regions: z.array(z.enum(monitorRegions).or(z.string())).optional(),
+        interval: z.int().optional(),
         fromDate: z.string().optional(),
         toDate: z.string().optional(),
       }),
@@ -3363,6 +3478,7 @@ export class OSTinybird {
       parameters: z.object({
         monitorId: z.string(),
         regions: z.array(z.enum(monitorRegions).or(z.string())).optional(),
+        interval: z.int().optional(),
         fromDate: z.string().optional(),
         toDate: z.string().optional(),
       }),
@@ -3382,6 +3498,8 @@ export class OSTinybird {
       pipe: "endpoint__tcp_metrics_latency_30d__v1",
       parameters: z.object({
         monitorId: z.string(),
+        regions: z.array(z.enum(monitorRegions).or(z.string())).optional(),
+        interval: z.int().optional(),
         fromDate: z.string().optional(),
         toDate: z.string().optional(),
       }),
@@ -3401,6 +3519,8 @@ export class OSTinybird {
       pipe: "endpoint__tcp_metrics_latency_90d__v1",
       parameters: z.object({
         monitorId: z.string(),
+        regions: z.array(z.enum(monitorRegions).or(z.string())).optional(),
+        interval: z.int().optional(),
         fromDate: z.string().optional(),
         toDate: z.string().optional(),
       }),
@@ -3420,6 +3540,8 @@ export class OSTinybird {
       pipe: "endpoint__dns_metrics_latency_30d__v0",
       parameters: z.object({
         monitorId: z.string(),
+        regions: z.array(z.enum(monitorRegions).or(z.string())).optional(),
+        interval: z.int().optional(),
         fromDate: z.string().optional(),
         toDate: z.string().optional(),
       }),
@@ -3439,6 +3561,8 @@ export class OSTinybird {
       pipe: "endpoint__dns_metrics_latency_90d__v0",
       parameters: z.object({
         monitorId: z.string(),
+        regions: z.array(z.enum(monitorRegions).or(z.string())).optional(),
+        interval: z.int().optional(),
         fromDate: z.string().optional(),
         toDate: z.string().optional(),
       }),
@@ -3528,6 +3652,16 @@ export class OSTinybird {
         p99Connect: z.int().nullable().prefault(0),
         p99Tls: z.int().nullable().prefault(0),
       }),
+    });
+  }
+
+  /** 15m buckets regrouped into days of `timezone`; see {@link status15mShape}. */
+  public get dnsStatus15m() {
+    return this.tb.buildPipe({
+      pipe: "endpoint__dns_status_15m__v0",
+      parameters: status15mParameters,
+      data: status15mShape(z.coerce.string()),
+      opts: { next: { revalidate: REVALIDATE } },
     });
   }
 
