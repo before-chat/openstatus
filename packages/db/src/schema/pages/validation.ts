@@ -6,6 +6,7 @@ import {
   THEME_KEYS,
   validateCustomTheme,
 } from "@openstatus/theme-store";
+import { isKnownTimeZone } from "@openstatus/utils";
 import { createInsertSchema, createSelectSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -32,6 +33,14 @@ export const customDomainSchema = z
     "Should not start with http://, https:// or www.",
   )
   .or(z.enum([""]));
+
+// ClickHouse rejects offsets like "+09:00" that Intl accepts.
+export const timeZoneSchema = z
+  .string()
+  .refine(
+    (value) => /^[A-Za-z]/.test(value) && isKnownTimeZone(value),
+    "Unknown IANA time zone",
+  );
 
 const stringToArray = z.preprocess((val) => {
   if (val && String(val).length > 0) {
@@ -75,7 +84,7 @@ export const insertPageSchema = createInsertSchema(page, {
   slug: slugSchema,
 })
   .extend({
-    password: z.string().nullable().optional().prefault(""),
+    password: z.string().nullable().prefault(""),
     monitors: z
       .array(
         z.object({
@@ -84,7 +93,7 @@ export const insertPageSchema = createInsertSchema(page, {
           order: z.number().prefault(0).optional(),
         }),
       )
-      .optional()
+
       .prefault([]),
     authEmailDomains: z.array(z.string()).nullish(),
     allowedIpRanges: z
@@ -98,8 +107,9 @@ export const insertPageSchema = createInsertSchema(page, {
           .pipe(z.cidrv4()),
       )
       .nullish(),
-    defaultLocale: z.enum(locales).optional().prefault("en"),
+    defaultLocale: z.enum(locales).prefault("en"),
     locales: z.array(z.enum(locales)).nullable().optional(),
+    defaultTimezone: timeZoneSchema.prefault("UTC"),
     customTheme: customThemeWriteSchema,
   })
   .refine(
@@ -147,7 +157,7 @@ export const pageConfigurationSchema = z.object({
 export type PageConfiguration = z.infer<typeof pageConfigurationSchema>;
 
 export const selectPageSchema = createSelectSchema(page).extend({
-  password: z.string().optional().nullable().prefault(""),
+  password: z.string().nullable().prefault(""),
   customTheme: customThemeSchema.nullish().catch(null),
   configuration: pageConfigurationSchema.nullish().prefault({}),
   accessType: z.enum(pageAccessTypes).prefault("public"),
@@ -155,6 +165,8 @@ export const selectPageSchema = createSelectSchema(page).extend({
   allowedIpRanges: stringToArray.prefault([]),
   defaultLocale: z.enum(locales).prefault("en"),
   locales: z.array(z.enum(locales)).nullable().prefault(null),
+  // A zone the runtime cannot resolve must not take the whole page down.
+  defaultTimezone: timeZoneSchema.catch("UTC"),
 });
 
 export type InsertPage = z.infer<typeof insertPageSchema>;

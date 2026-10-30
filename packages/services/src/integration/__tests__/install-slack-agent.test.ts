@@ -1,7 +1,6 @@
 import { and, desc, eq } from "@openstatus/db";
 import { integration } from "@openstatus/db/src/schema";
-import { expect } from "@std/expect";
-import { beforeAll, describe, test } from "@std/testing/bdd";
+import { beforeAll, describe, expect, test } from "vitest";
 
 import {
   clearAuditLog,
@@ -25,6 +24,7 @@ beforeAll(async () => {
   ctx = makeSlackCtx(team.workspace, {
     teamId: TEAM_ID,
     slackUserId: SLACK_USER_ID,
+    userId: team.userId,
   });
 });
 

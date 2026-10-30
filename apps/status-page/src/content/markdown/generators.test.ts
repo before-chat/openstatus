@@ -1,5 +1,4 @@
-import { expect } from "@std/expect";
-import { describe, test } from "@std/testing/bdd";
+import { describe, expect, test } from "vitest";
 
 import {
   escapeCell,
@@ -537,6 +536,29 @@ describe("generateMaintenance", () => {
     });
     expect(withUrls).toContain('homepage_url: "https://acme.com"');
     expect(withUrls).toContain('contact_url: "mailto:status@acme.com"');
+  });
+
+  test("renders updates newest-first instead of the deprecated message", () => {
+    const withUpdates = {
+      ...maintenance,
+      maintenanceUpdates: [
+        {
+          date: new Date("2026-06-20T00:15:00.000Z"),
+          message: "Work started.",
+        },
+        {
+          date: new Date("2026-06-20T00:45:00.000Z"),
+          message: "Work completed.",
+        },
+      ],
+    } as unknown as MaintenanceDetail;
+    const out = generateMaintenance(withUpdates, BASE);
+    expect(out).not.toContain("## Details");
+    expect(out).not.toContain("Brief downtime.");
+    expect(out).toContain("## Updates");
+    expect(out.indexOf("Work completed.")).toBeLessThan(
+      out.indexOf("Work started."),
+    );
   });
 
   test("null `to` renders 'ongoing', not a bogus duration", () => {

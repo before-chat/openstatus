@@ -1,7 +1,8 @@
 import { getLogger } from "@logtape/logtape";
-import * as Sentry from "@sentry/deno";
+import * as Sentry from "@sentry/node";
 import { Effect, Fiber, Schedule } from "effect";
 
+import { runIncidentRemindersTick } from "./incident-reminders";
 import { runOAuthPruneTick } from "./oauth-prune";
 import { handleOutboxDrainCron, handleOutboxRetentionCron } from "./outbox";
 import { handleStatusDriftCron } from "./status-drift";
@@ -18,7 +19,8 @@ type ScheduledTask = {
  * Internal maintenance only, so it runs in-process rather than needing a
  * schedule added outside this repo. Every task is safe to run on both machines
  * at once: the outbox claim is atomic, drift repair is guarded by the same
- * compare-and-swap as a live check, and retention deletes are idempotent.
+ * compare-and-swap as a live check, retention deletes are idempotent, and each
+ * incident reminder window is claimed in Redis before it is sent.
  */
 export const SCHEDULED_TASKS: ScheduledTask[] = [
   {
@@ -41,15 +43,33 @@ export const SCHEDULED_TASKS: ScheduledTask[] = [
     expression: "41 3 * * *",
     run: runOAuthPruneTick,
   },
+  {
+    name: "incident-reminders",
+    expression: "*/10 * * * *",
+    run: runIncidentRemindersTick,
+  },
 ];
 
 type RunningTask = Fiber.Fiber<unknown, unknown>;
 
 let running: RunningTask[] = [];
 
+// Interrupting a fiber does not cancel the promise `Effect.tryPromise` is
+// waiting on, so the task keeps running detached. Track it so shutdown can wait
+// for, e.g., a claimed incident reminder window to actually be sent.
+const inFlight = new Set<Promise<unknown>>();
+
+function track(task: ScheduledTask): Promise<unknown> {
+  const promise = task.run().finally(() => {
+    inFlight.delete(promise);
+  });
+  inFlight.add(promise);
+  return promise;
+}
+
 function scheduleTask(task: ScheduledTask): RunningTask {
   const body = Effect.tryPromise({
-    try: () => task.run(),
+    try: () => track(task),
     catch: (error) =>
       error instanceof Error ? error : new Error(String(error)),
   }).pipe(
@@ -98,4 +118,21 @@ export async function stopScheduler(): Promise<void> {
       discard: true,
     }),
   );
+}
+
+/**
+ * Resolves once every scheduled task already started has settled, or after
+ * `graceMs`. Call after `stopScheduler` so no new run can start meanwhile.
+ */
+export async function drainScheduledTasks(graceMs: number): Promise<void> {
+  if (inFlight.size === 0) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const grace = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, graceMs);
+  });
+  await Promise.race([
+    Promise.allSettled(inFlight).then(() => undefined),
+    grace,
+  ]);
+  if (timer !== undefined) clearTimeout(timer);
 }

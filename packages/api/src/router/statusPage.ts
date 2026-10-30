@@ -15,7 +15,9 @@ import {
   selectStatusReportPageSchema,
   selectWorkspaceSchema,
   statusReport,
+  timeZoneSchema,
 } from "@openstatus/db/src/schema";
+import { getStatusUpdateTypes } from "@openstatus/services/page";
 import { constantTimeEqual } from "@openstatus/services/page-access";
 import {
   getSubscriberByToken,
@@ -34,10 +36,12 @@ import {
   resolvePageAccess,
   visitorFromCtx,
 } from "../lib/page-access";
+import { sendSubscriberVerification } from "../lib/subscriber-verification";
 import { createTRPCRouter, publicProcedure } from "../trpc";
 import {
   type StatusData,
   activeReportStatus,
+  fetchByJobType,
   fillStatusDataFor45Days,
   fillStatusDataFor45DaysNoop,
   getEvents,
@@ -51,6 +55,7 @@ import {
   getMetricsLatencyMultiProcedure,
   getMetricsLatencyProcedure,
   getMetricsRegionsProcedure,
+  getStatusInTimeZoneProcedure,
   getStatusProcedure,
   getUptimeProcedure,
 } from "./tinybird";
@@ -78,6 +83,60 @@ const gateFieldsSchema = selectPageSchema.pick({
 // Password for cookie-less server callers (feeds, `?pw=` links).
 const queryPasswordSchema = z.string().nullish();
 
+// A host reaches its page through either the slug or the custom domain.
+const bySlugOrDomain = (slug: string) =>
+  sql`lower(${page.slug}) = ${slug} OR lower(${page.customDomain}) = ${slug}`;
+
+export function sortStatusReportsByLatestUpdate<
+  T extends { id: number; statusReportUpdates: { date: Date }[] },
+>(a: T, b: T): number {
+  // Sort reports without updates to the beginning
+  if (a.statusReportUpdates.length === 0 && b.statusReportUpdates.length === 0)
+    return b.id - a.id;
+  if (a.statusReportUpdates.length === 0) return -1;
+  if (b.statusReportUpdates.length === 0) return 1;
+  return (
+    b.statusReportUpdates[0].date.getTime() -
+      a.statusReportUpdates[0].date.getTime() || b.id - a.id
+  );
+}
+
+// Status rows grouped into `timeZone` days, with the zone they ended up in.
+async function fetchStatusDays(
+  monitors: Parameters<typeof fetchByJobType>[0],
+  timeZone: string,
+) {
+  const readUtc = async () => ({
+    timeZone: "UTC",
+    rows: await fetchByJobType(monitors, (type) =>
+      getStatusProcedure("45d", type),
+    ),
+  });
+  // UTC pages keep the 45d pipes; other zones regroup 15m buckets into their days
+  if (timeZone === "UTC") return readUtc();
+  try {
+    const rows = await fetchByJobType(
+      monitors,
+      (type) =>
+        ({ monitorIds }) =>
+          getStatusInTimeZoneProcedure(type)({
+            monitorIds,
+            timezone: timeZone,
+          }),
+    );
+    return { timeZone, rows };
+  } catch (err) {
+    // ClickHouse's tz database can reject a zone Node accepts: keep real bars
+    // in UTC days; other errors still drop the page to manual mode
+    if (!(err instanceof Error) || !/time ?zone/i.test(err.message)) throw err;
+    console.error(
+      `[status-page] zone ${timeZone} failed, using UTC days:`,
+      err,
+    );
+    return readUtc();
+  }
+}
+
 export const statusPageRouter = createTRPCRouter({
   get: publicProcedure
     .input(
@@ -96,7 +155,7 @@ export const statusPageRouter = createTRPCRouter({
       if (!opts.input.slug) return null;
 
       const _page = await opts.ctx.db.query.page.findFirst({
-        where: sql`lower(${page.slug}) = ${opts.input.slug} OR lower(${page.customDomain}) = ${opts.input.slug}`,
+        where: bySlugOrDomain(opts.input.slug),
         with: {
           workspace: true,
           statusReports: {
@@ -112,6 +171,12 @@ export const statusPageRouter = createTRPCRouter({
           },
           maintenances: {
             with: {
+              maintenanceUpdates: {
+                orderBy: (updates, { desc }) => [
+                  desc(updates.date),
+                  desc(updates.id),
+                ],
+              },
               maintenancesToPageComponents: { with: { pageComponent: true } },
             },
             orderBy: (maintenances, { desc }) => desc(maintenances.from),
@@ -120,7 +185,7 @@ export const statusPageRouter = createTRPCRouter({
             with: {
               monitor: {
                 with: {
-                  incidents: true,
+                  monitorIncidents: true,
                 },
               },
               group: true,
@@ -164,7 +229,7 @@ export const statusPageRouter = createTRPCRouter({
       const components = pageComponents.map((c) => {
         const events = getEvents({
           maintenances: _page.maintenances,
-          incidents: c.monitor?.incidents ?? [],
+          incidents: c.monitor?.monitorIncidents ?? [],
           reports: _page.statusReports,
           pageComponentId: c.id,
           monitorId: c.monitorId ?? undefined,
@@ -220,7 +285,7 @@ export const statusPageRouter = createTRPCRouter({
       const monitors = monitorComponents.map((c) => {
         const events = getEvents({
           maintenances: _page.maintenances,
-          incidents: c.monitor.incidents ?? [],
+          incidents: c.monitor.monitorIncidents ?? [],
           reports: _page.statusReports,
           monitorId: c.monitor.id,
         });
@@ -337,7 +402,9 @@ export const statusPageRouter = createTRPCRouter({
       // Get page-wide events (not tied to specific monitors)
       const pageEvents = getEvents({
         maintenances: _page.maintenances,
-        incidents: monitorComponents.flatMap((c) => c.monitor.incidents ?? []),
+        incidents: monitorComponents.flatMap(
+          (c) => c.monitor.monitorIncidents ?? [],
+        ),
         reports: _page.statusReports,
         // No monitorId provided, so we get all events for the page
       });
@@ -435,13 +502,11 @@ export const statusPageRouter = createTRPCRouter({
         .flatMap((group): Tracker[] => {
           if (group.groupId === null) {
             // Ungrouped components - return as individual trackers
-            return group.components.map(
-              (component): PageComponentTracker => ({
-                type: "component",
-                component,
-                order: component.order ?? 0,
-              }),
-            );
+            return group.components.map((component): PageComponentTracker => ({
+              type: "component",
+              component,
+              order: component.order ?? 0,
+            }));
           }
           // Grouped components - return as single group tracker
           const sortedComponents = group.components.sort(
@@ -471,22 +536,9 @@ export const statusPageRouter = createTRPCRouter({
         ? _page.customTheme
         : null;
 
-      const statusReports = _page.statusReports.sort((a, b) => {
-        // Sort reports without updates to the beginning
-        if (
-          a.statusReportUpdates.length === 0 &&
-          b.statusReportUpdates.length === 0
-        )
-          return 0;
-        if (a.statusReportUpdates.length === 0) return -1;
-        if (b.statusReportUpdates.length === 0) return -1;
-        return (
-          b.statusReportUpdates[
-            b.statusReportUpdates.length - 1
-          ].date.getTime() -
-          a.statusReportUpdates[a.statusReportUpdates.length - 1].date.getTime()
-        );
-      });
+      const statusReports = _page.statusReports.sort(
+        sortStatusReportsByLatestUpdate,
+      );
 
       const maintenances = _page.maintenances.sort(
         (a, b) => b.from.getTime() - a.from.getTime(),
@@ -499,7 +551,7 @@ export const statusPageRouter = createTRPCRouter({
         barType === "manual"
           ? pageComponents.map((c) =>
               c.monitor
-                ? { ...c, monitor: { ...c.monitor, incidents: [] } }
+                ? { ...c, monitor: { ...c.monitor, monitorIncidents: [] } }
                 : c,
             )
           : pageComponents;
@@ -511,10 +563,16 @@ export const statusPageRouter = createTRPCRouter({
         monitorGroups,
         trackers,
         incidents:
-          monitorsWithPrivateLocationCount.flatMap((m) => m.incidents) ?? [],
+          monitorsWithPrivateLocationCount.flatMap((m) => m.monitorIncidents) ??
+          [],
         statusReports,
         maintenances,
         workspacePlan: _page.workspace.plan,
+        statusUpdateTypes: getStatusUpdateTypes({
+          accessType: _page.accessType ?? "public",
+          emailSubscriptionsEnabled:
+            ws.data?.limits["status-subscribers"] ?? false,
+        }),
         status,
         lastEvents,
         openEvents,
@@ -536,7 +594,7 @@ export const statusPageRouter = createTRPCRouter({
 
       // Single query with all relations
       const _page = await opts.ctx.db.query.page.findFirst({
-        where: sql`lower(${page.slug}) = ${opts.input.slug} OR lower(${page.customDomain}) = ${opts.input.slug}`,
+        where: bySlugOrDomain(opts.input.slug),
         with: {
           workspace: true,
           statusReports: {
@@ -550,13 +608,19 @@ export const statusPageRouter = createTRPCRouter({
           },
           maintenances: {
             with: {
+              maintenanceUpdates: {
+                orderBy: (updates, { desc }) => [
+                  desc(updates.date),
+                  desc(updates.id),
+                ],
+              },
               maintenancesToPageComponents: { with: { pageComponent: true } },
             },
             orderBy: (maintenances, { desc }) => desc(maintenances.from),
           },
           pageComponents: {
             with: {
-              monitor: { with: { incidents: true } },
+              monitor: { with: { monitorIncidents: true } },
               group: true,
             },
             orderBy: (pageComponents, { asc }) => asc(pageComponents.order),
@@ -604,7 +668,7 @@ export const statusPageRouter = createTRPCRouter({
 
       // Extract all incidents from monitor components
       const incidents = monitorComponents.flatMap(
-        (c) => c.monitor?.incidents ?? [],
+        (c) => c.monitor?.monitorIncidents ?? [],
       );
 
       const ws = selectWorkspaceSchema.safeParse(_page.workspace);
@@ -614,12 +678,16 @@ export const statusPageRouter = createTRPCRouter({
         ? _page.customTheme
         : null;
 
+      const statusReports = _page.statusReports.sort(
+        sortStatusReportsByLatestUpdate,
+      );
+
       return selectPublicPageLightSchemaWithRelation.parse({
         ..._page,
         customTheme,
         monitors,
         incidents,
-        statusReports: _page.statusReports,
+        statusReports,
         maintenances: _page.maintenances,
         pageComponents: _page.pageComponents,
         pageComponentGroups: _page.pageComponentGroups,
@@ -637,7 +705,7 @@ export const statusPageRouter = createTRPCRouter({
       if (!opts.input.slug) return null;
 
       const _page = await opts.ctx.db.query.page.findFirst({
-        where: sql`lower(${page.slug}) = ${opts.input.slug} OR lower(${page.customDomain}) = ${opts.input.slug}`,
+        where: bySlugOrDomain(opts.input.slug),
         columns: {
           slug: true,
           customDomain: true,
@@ -674,9 +742,7 @@ export const statusPageRouter = createTRPCRouter({
       const _page = await opts.ctx.db
         .select()
         .from(page)
-        .where(
-          sql`lower(${page.slug}) = ${opts.input.slug} OR lower(${page.customDomain}) = ${opts.input.slug}`,
-        )
+        .where(bySlugOrDomain(opts.input.slug))
         .get();
 
       if (!_page) return null;
@@ -689,6 +755,12 @@ export const statusPageRouter = createTRPCRouter({
           eq(maintenance.pageId, _page.id),
         ),
         with: {
+          maintenanceUpdates: {
+            orderBy: (updates, { desc }) => [
+              desc(updates.date),
+              desc(updates.id),
+            ],
+          },
           maintenancesToPageComponents: {
             with: { pageComponent: { with: { monitor: true } } },
           },
@@ -723,7 +795,7 @@ export const statusPageRouter = createTRPCRouter({
       if (!input.slug) return null;
 
       const _page = await opts.ctx.db.query.page.findFirst({
-        where: sql`lower(${page.slug}) = ${input.slug} OR lower(${page.customDomain}) = ${input.slug}`,
+        where: bySlugOrDomain(input.slug),
         with: {
           maintenances: {
             with: {
@@ -746,7 +818,7 @@ export const statusPageRouter = createTRPCRouter({
             with: {
               monitor: {
                 with: {
-                  incidents: true,
+                  monitorIncidents: true,
                 },
               },
             },
@@ -767,70 +839,24 @@ export const statusPageRouter = createTRPCRouter({
 
       const monitors = pageComponents.filter(isMonitorComponent);
 
-      const monitorsByType = {
-        http: monitors.filter((c) => c.monitor.jobType === "http"),
-        tcp: monitors.filter((c) => c.monitor.jobType === "tcp"),
-        dns: monitors.filter((c) => c.monitor.jobType === "dns"),
-        icmp: monitors.filter((c) => c.monitor.jobType === "icmp"),
-        grpc: monitors.filter((c) => c.monitor.jobType === "grpc"),
-      };
-
-      const proceduresByType = {
-        http: getStatusProcedure("45d", "http"),
-        tcp: getStatusProcedure("45d", "tcp"),
-        dns: getStatusProcedure("45d", "dns"),
-        icmp: getStatusProcedure("45d", "icmp"),
-        grpc: getStatusProcedure("45d", "grpc"),
-      };
+      // a zone this runtime cannot resolve renders the page in UTC instead of failing it
+      const pageTimeZone = timeZoneSchema
+        .catch("UTC")
+        .parse(_page.defaultTimezone);
 
       // Manual mode never touches Tinybird. Otherwise race the reads against
       // the fallback budget: a slow (>5s) or erroring Tinybird degrades the
       // whole page to manual mode so bars still render from DB events.
       const tinybird = await withTinybirdFallback(() =>
         input.barType === "manual"
-          ? Promise.resolve([null, null, null, null, null])
-          : Promise.all(
-              Object.entries(proceduresByType).map(([type, procedure]) => {
-                const monitorIds = monitorsByType[
-                  type as keyof typeof proceduresByType
-                ].map((c) => c.monitor.id.toString());
-                if (monitorIds.length === 0) return null;
-                return procedure({ monitorIds });
-              }),
-            ),
+          ? Promise.resolve(null)
+          : fetchStatusDays(monitors, pageTimeZone),
       );
 
       const tinybirdUnhealthy = !tinybird.ok;
-      const [statusHttp, statusTcp, statusDns, statusIcmp, statusGrpc] =
-        tinybird.data ?? [null, null, null, null, null];
-
-      const statusDataByMonitorId = new Map<
-        string,
-        | Awaited<ReturnType<(typeof proceduresByType)["http"]>>["data"]
-        | Awaited<ReturnType<(typeof proceduresByType)["tcp"]>>["data"]
-        | Awaited<ReturnType<(typeof proceduresByType)["dns"]>>["data"]
-        | Awaited<ReturnType<(typeof proceduresByType)["icmp"]>>["data"]
-        | Awaited<ReturnType<(typeof proceduresByType)["grpc"]>>["data"]
-      >();
-
-      // Consolidate status data from all monitor types into the map
-      for (const statusResult of [
-        statusHttp,
-        statusTcp,
-        statusDns,
-        statusIcmp,
-        statusGrpc,
-      ]) {
-        if (statusResult?.data) {
-          statusResult.data.forEach((status) => {
-            const monitorId = status.monitorId;
-            if (!statusDataByMonitorId.has(monitorId)) {
-              statusDataByMonitorId.set(monitorId, []);
-            }
-            statusDataByMonitorId.get(monitorId)?.push(status);
-          });
-        }
-      }
+      const timeZone = tinybird.data?.timeZone ?? pageTimeZone;
+      const statusDataByMonitorId =
+        tinybird.data?.rows ?? new Map<string, never[]>();
 
       const parsedConfiguration = pageConfigurationSchema.safeParse(
         _page.configuration ?? {},
@@ -839,10 +865,31 @@ export const statusPageRouter = createTRPCRouter({
         input.days ??
         (parsedConfiguration.success ? parsedConfiguration.data.days : 45);
 
+      // No public regions alone doesn't make a monitor private-only: it may
+      // have no locations at all, so confirm an active private assignment.
+      const noRegionMonitorIds = monitors
+        .filter((c) => c.monitor.regions.length === 0)
+        .map((c) => c.monitor.id);
+      const privateOnlyMonitorIds = new Set<number>();
+      if (noRegionMonitorIds.length > 0) {
+        const rows = await opts.ctx.db.query.privateLocationToMonitors.findMany(
+          {
+            where: and(
+              inArray(privateLocationToMonitors.monitorId, noRegionMonitorIds),
+              isNull(privateLocationToMonitors.deletedAt),
+            ),
+            columns: { monitorId: true },
+          },
+        );
+        for (const row of rows) {
+          if (row.monitorId !== null) privateOnlyMonitorIds.add(row.monitorId);
+        }
+      }
+
       return pageComponents.map((c) => {
         const events = getEvents({
           maintenances: _page.maintenances,
-          incidents: c.monitor?.incidents ?? [],
+          incidents: c.monitor?.monitorIncidents ?? [],
           reports: _page.statusReports,
           pageComponentId: c.id,
           monitorId: c.monitorId ?? undefined,
@@ -866,6 +913,7 @@ export const statusPageRouter = createTRPCRouter({
             rawData,
             monitorId,
             lookbackPeriod,
+            timeZone,
           );
         } else {
           // Static components, manual mode, or NOOP mode: use synthetic data
@@ -873,6 +921,7 @@ export const statusPageRouter = createTRPCRouter({
             errorDays: [],
             degradedDays: [],
             lookbackPeriod,
+            timeZone,
           });
         }
 
@@ -887,12 +936,16 @@ export const statusPageRouter = createTRPCRouter({
           data: filledData,
           cardType: effectiveCardType,
           barType: effectiveBarType,
+          timeZone,
         });
         const uptime = getUptime({
           data: filledData,
           events,
           barType: effectiveBarType,
           cardType: effectiveCardType,
+          timeZone,
+          privateLocationOnly:
+            c.monitor != null && privateOnlyMonitorIds.has(c.monitor.id),
         });
 
         return {
@@ -905,6 +958,8 @@ export const statusPageRouter = createTRPCRouter({
           ...(c.monitor ? { monitor: c.monitor } : {}),
           data: processedData,
           uptime,
+          // the zone the days were grouped in, UTC if the page's was rejected
+          timeZone,
         };
       });
     }),
@@ -950,9 +1005,7 @@ export const statusPageRouter = createTRPCRouter({
       const _page = await opts.ctx.db
         .select()
         .from(page)
-        .where(
-          sql`lower(${page.slug}) = ${opts.input.slug} OR lower(${page.customDomain}) = ${opts.input.slug}`,
-        )
+        .where(bySlugOrDomain(opts.input.slug))
         .get();
 
       if (!_page) return null;
@@ -1072,7 +1125,7 @@ export const statusPageRouter = createTRPCRouter({
 
       // NOTE: revalidate the public monitors first
       const _page = await opts.ctx.db.query.page.findFirst({
-        where: sql`lower(${page.slug}) = ${opts.input.slug} OR lower(${page.customDomain}) = ${opts.input.slug}`,
+        where: bySlugOrDomain(opts.input.slug),
         with: {
           pageComponents: {
             with: {
@@ -1094,101 +1147,13 @@ export const statusPageRouter = createTRPCRouter({
         .filter(isMonitorComponent)
         .filter((c) => c.monitor?.public);
 
-      const monitorsByType = {
-        http: publicMonitors.filter((c) => c.monitor.jobType === "http"),
-        tcp: publicMonitors.filter((c) => c.monitor.jobType === "tcp"),
-        dns: publicMonitors.filter((c) => c.monitor.jobType === "dns"),
-        icmp: publicMonitors.filter((c) => c.monitor.jobType === "icmp"),
-        grpc: publicMonitors.filter((c) => c.monitor.jobType === "grpc"),
-      };
-
-      const proceduresByType = {
-        http: getMetricsLatencyMultiProcedure("1d", "http"),
-        tcp: getMetricsLatencyMultiProcedure("1d", "tcp"),
-        dns: getMetricsLatencyMultiProcedure("1d", "dns"),
-        icmp: getMetricsLatencyMultiProcedure("1d", "icmp"),
-        grpc: getMetricsLatencyMultiProcedure("1d", "grpc"),
-      };
-
       // Slow/erroring Tinybird → empty latency data so the page still renders.
       const metrics = await withTinybirdFallback(() =>
-        Promise.all(
-          Object.entries(proceduresByType).map(([type, procedure]) => {
-            const monitorIds = monitorsByType[
-              type as keyof typeof proceduresByType
-            ].map((c) => c.monitor.id.toString());
-            if (monitorIds.length === 0) return null;
-            return procedure({ monitorIds });
-          }),
+        fetchByJobType(publicMonitors, (type) =>
+          getMetricsLatencyMultiProcedure("1d", type),
         ),
       );
-
-      const [
-        metricsLatencyMultiHttp,
-        metricsLatencyMultiTcp,
-        metricsLatencyMultiDns,
-        metricsLatencyMultiIcmp,
-        metricsLatencyMultiGrpc,
-      ] = metrics.data ?? [null, null, null, null, null];
-
-      const metricsDataByMonitorId = new Map<
-        string,
-        | Awaited<ReturnType<(typeof proceduresByType)["http"]>>["data"]
-        | Awaited<ReturnType<(typeof proceduresByType)["tcp"]>>["data"]
-        | Awaited<ReturnType<(typeof proceduresByType)["dns"]>>["data"]
-        | Awaited<ReturnType<(typeof proceduresByType)["icmp"]>>["data"]
-        | Awaited<ReturnType<(typeof proceduresByType)["grpc"]>>["data"]
-      >();
-
-      if (metricsLatencyMultiHttp?.data) {
-        metricsLatencyMultiHttp.data.forEach((metric) => {
-          const monitorId = metric.monitorId;
-          if (!metricsDataByMonitorId.has(monitorId)) {
-            metricsDataByMonitorId.set(monitorId, []);
-          }
-          metricsDataByMonitorId.get(monitorId)?.push(metric);
-        });
-      }
-
-      if (metricsLatencyMultiTcp?.data) {
-        metricsLatencyMultiTcp.data.forEach((metric) => {
-          const monitorId = metric.monitorId;
-          if (!metricsDataByMonitorId.has(monitorId)) {
-            metricsDataByMonitorId.set(monitorId, []);
-          }
-          metricsDataByMonitorId.get(monitorId)?.push(metric);
-        });
-      }
-
-      if (metricsLatencyMultiDns?.data) {
-        metricsLatencyMultiDns.data.forEach((metric) => {
-          const monitorId = metric.monitorId;
-          if (!metricsDataByMonitorId.has(monitorId)) {
-            metricsDataByMonitorId.set(monitorId, []);
-          }
-          metricsDataByMonitorId.get(monitorId)?.push(metric);
-        });
-      }
-
-      if (metricsLatencyMultiIcmp?.data) {
-        metricsLatencyMultiIcmp.data.forEach((metric) => {
-          const monitorId = metric.monitorId;
-          if (!metricsDataByMonitorId.has(monitorId)) {
-            metricsDataByMonitorId.set(monitorId, []);
-          }
-          metricsDataByMonitorId.get(monitorId)?.push(metric);
-        });
-      }
-
-      if (metricsLatencyMultiGrpc?.data) {
-        metricsLatencyMultiGrpc.data.forEach((metric) => {
-          const monitorId = metric.monitorId;
-          if (!metricsDataByMonitorId.has(monitorId)) {
-            metricsDataByMonitorId.set(monitorId, []);
-          }
-          metricsDataByMonitorId.get(monitorId)?.push(metric);
-        });
-      }
+      const metricsDataByMonitorId = metrics.data ?? new Map<string, never[]>();
 
       return publicMonitors.map((c) => {
         const monitorId = c.monitor.id.toString();
@@ -1213,7 +1178,7 @@ export const statusPageRouter = createTRPCRouter({
       if (!opts.input.slug) return null;
 
       const _page = await opts.ctx.db.query.page.findFirst({
-        where: sql`lower(${page.slug}) = ${opts.input.slug} OR lower(${page.customDomain}) = ${opts.input.slug}`,
+        where: bySlugOrDomain(opts.input.slug),
         with: {
           pageComponents: {
             where: eq(pageComponent.monitorId, opts.input.id),
@@ -1347,7 +1312,7 @@ export const statusPageRouter = createTRPCRouter({
     }),
 
   subscribe: publicProcedure
-    .meta({ track: Events.SubscribePage, trackProps: ["slug", "email"] })
+    .meta({ track: Events.SubscribePage, trackProps: ["slug"] })
     .input(
       z.object({
         slug: z.string().toLowerCase(),
@@ -1360,7 +1325,7 @@ export const statusPageRouter = createTRPCRouter({
       if (!opts.input.slug) return null;
 
       const _page = await opts.ctx.db.query.page.findFirst({
-        where: sql`lower(${page.slug}) = ${opts.input.slug} OR lower(${page.customDomain}) = ${opts.input.slug}`,
+        where: bySlugOrDomain(opts.input.slug),
         with: {
           workspace: true,
         },
@@ -1424,7 +1389,9 @@ export const statusPageRouter = createTRPCRouter({
         });
       }
 
-      return { id: subscription.id, token: subscription.token };
+      await sendSubscriberVerification(opts.ctx.db, subscription.id);
+
+      return { id: subscription.id };
     }),
 
   getSubscriptionByToken: publicProcedure
@@ -1482,13 +1449,13 @@ export const statusPageRouter = createTRPCRouter({
     }),
 
   validateEmailDomain: publicProcedure
-    .meta({ track: Events.ValidateEmailDomain, trackProps: ["slug", "email"] })
+    .meta({ track: Events.ValidateEmailDomain, trackProps: ["slug"] })
     .input(z.object({ slug: z.string().toLowerCase(), email: z.string() }))
     .query(async (opts) => {
       if (!opts.input.slug) return null;
 
       const _page = await opts.ctx.db.query.page.findFirst({
-        where: sql`lower(${page.slug}) = ${opts.input.slug} OR lower(${page.customDomain}) = ${opts.input.slug}`,
+        where: bySlugOrDomain(opts.input.slug),
       });
 
       if (!_page) {
@@ -1515,10 +1482,11 @@ export const statusPageRouter = createTRPCRouter({
         });
       }
 
+      // Public procedure: never return the raw row (password, IP allow-list).
       return {
         email: opts.input.email,
         slug: opts.input.slug,
-        page: _page,
+        page: { title: _page.title },
       };
     }),
 
@@ -1556,7 +1524,7 @@ export const statusPageRouter = createTRPCRouter({
       if (!opts.input.slug) return null;
 
       const _page = await opts.ctx.db.query.page.findFirst({
-        where: sql`lower(${page.slug}) = ${opts.input.slug} OR lower(${page.customDomain}) = ${opts.input.slug}`,
+        where: bySlugOrDomain(opts.input.slug),
       });
 
       if (!_page) {
@@ -1595,7 +1563,7 @@ export const statusPageRouter = createTRPCRouter({
     )
     .query(async (opts) => {
       const _page = await opts.ctx.db.query.page.findFirst({
-        where: sql`lower(${page.slug}) = ${opts.input.slug} OR lower(${page.customDomain}) = ${opts.input.slug}`,
+        where: bySlugOrDomain(opts.input.slug),
         columns: { password: true, accessType: true },
       });
       if (!_page || _page.accessType !== "password") return false;

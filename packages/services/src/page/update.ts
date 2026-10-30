@@ -7,6 +7,7 @@ import { type ServiceContext, withTransaction } from "../context";
 import { LimitExceededError } from "../errors";
 import {
   assertAccessTypeAllowed,
+  assertCustomDomainAvailable,
   assertSlugAvailable,
   getPageInWorkspace,
 } from "./internal";
@@ -85,6 +86,11 @@ export async function updatePageCustomDomain(args: {
       id: input.id,
       workspaceId: ctx.workspace.id,
     });
+    await assertCustomDomainAvailable({
+      tx,
+      customDomain: input.customDomain,
+      excludePageId: existing.id,
+    });
 
     const updated = await tx
       .update(page)
@@ -149,7 +155,8 @@ export async function updatePagePasswordProtection(args: {
         // non-empty joins (e.g. `"a@b.com"` / `"10.0.0.0/24"`) pass
         // through unchanged.
         authEmailDomains: input.authEmailDomains?.join(",") || null,
-        password: input.password,
+        // Drop a retired password; `undefined` keeps the stored one.
+        password: input.accessType === "password" ? input.password : null,
         allowedIpRanges: input.allowedIpRanges?.join(",") || null,
         ...(input.allowIndex !== undefined && { allowIndex: input.allowIndex }),
         updatedAt: new Date(),

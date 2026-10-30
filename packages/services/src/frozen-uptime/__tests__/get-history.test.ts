@@ -1,6 +1,6 @@
 import {
   frozenMonitorUptime,
-  incidentTable,
+  monitorIncidentTable,
   monitor,
   page,
   pageComponent,
@@ -10,8 +10,7 @@ import {
   statusReportUpdateToPageComponents,
 } from "@openstatus/db/src/schema";
 import type { FrozenMonitorUptimeDay } from "@openstatus/db/src/schema";
-import { expect } from "@std/expect";
-import { beforeAll, describe, test } from "@std/testing/bdd";
+import { beforeAll, describe, expect, test } from "vitest";
 
 import {
   createWorkspaceFixture,
@@ -595,7 +594,7 @@ describe("getUptimeHistory", () => {
       const base = monthStart(key(1)).getTime() + 5 * MS_PER_DAY;
       const twoHours = 2 * 3_600_000;
       // incident and major report describe the same 2h outage → merged once
-      await tx.insert(incidentTable).values({
+      await tx.insert(monitorIncidentTable).values({
         workspaceId: teamWorkspaceId,
         monitorId: testMonitor.id,
         startedAt: new Date(base),
@@ -718,7 +717,7 @@ describe("getUptimeHistory", () => {
         },
       ]);
       const twoHours = 2 * 3_600_000;
-      await tx.insert(incidentTable).values({
+      await tx.insert(monitorIncidentTable).values({
         workspaceId: teamWorkspaceId,
         monitorId: testMonitor.id,
         startedAt: new Date(start + twoHours),

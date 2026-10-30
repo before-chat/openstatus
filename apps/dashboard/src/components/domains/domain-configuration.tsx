@@ -8,6 +8,7 @@ import {
   TabsTrigger,
 } from "@openstatus/ui/components/ui/tabs";
 import { cn } from "@openstatus/ui/lib/utils";
+import { useEffect, useRef } from "react";
 
 import {
   StepCard,
@@ -57,8 +58,19 @@ export default function DomainConfiguration({ domain }: { domain: string }) {
     managed,
     selfHostedDnsReady,
     selfHostedHttpsReady,
+    issueCertificateMutation,
   } = useDomainStatus(domain);
   const { customDomainCnameTarget, statusPageBaseUrl } = useDeploymentConfig();
+  const certificateRequested = useRef(false);
+
+  // Vercel's own retry can leave the order idle for a long time; nudge it once per visit.
+  useEffect(() => {
+    if (!managed) return;
+    if (status !== "Generating SSL Certificate") return;
+    if (certificateRequested.current) return;
+    certificateRequested.current = true;
+    issueCertificateMutation.mutate({ domain });
+  }, [managed, status, domain, issueCertificateMutation]);
 
   if (!managed) {
     if (customDomainCnameTarget) {
