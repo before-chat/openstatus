@@ -20,17 +20,22 @@ export const env = createEnv({
       .string()
       .email()
       .prefault("notifications@mail.openstatus.dev"),
+    EMAIL_FROM_SUBSCRIBERS: z
+      .string()
+      .email()
+      .prefault("notifications@subscribers.openstatus.dev"),
     EMAIL_FROM_WELCOME: z.string().email().prefault("welcome@openstatus.dev"),
     EMAIL_FROM_FEEDBACK: z.string().email().prefault("thibault@openstatus.dev"),
     EMAIL_FROM_WELCOME_NAME: z.string().prefault("Thibault Le Ouay Ducasse"),
     EMAIL_FROM_FEEDBACK_NAME: z.string().prefault("Thibault Le Ouay Ducasse"),
-    EMAIL_FROM_NAME: z.string().prefault("OpenStatus"),
+    EMAIL_FROM_NAME: z.string().prefault("openstatus"),
   },
   runtimeEnv: {
     RESEND_API_KEY: process.env.RESEND_API_KEY,
     NODE_ENV: processEnv.NODE_ENV,
     EMAIL_FROM: process.env.EMAIL_FROM,
     EMAIL_FROM_ACCOUNT: process.env.EMAIL_FROM_ACCOUNT,
+    EMAIL_FROM_SUBSCRIBERS: process.env.EMAIL_FROM_SUBSCRIBERS,
     EMAIL_FROM_WELCOME: process.env.EMAIL_FROM_WELCOME,
     EMAIL_FROM_FEEDBACK: process.env.EMAIL_FROM_FEEDBACK,
     EMAIL_FROM_WELCOME_NAME: process.env.EMAIL_FROM_WELCOME_NAME,

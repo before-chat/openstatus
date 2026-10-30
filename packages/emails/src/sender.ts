@@ -1,5 +1,4 @@
-import { env } from "./env";
-
+const SUBSCRIBERS_ADDRESS = "notifications@subscribers.openstatus.dev";
 const MAX_DISPLAY_NAME_LENGTH = 60;
 
 /**
@@ -17,5 +16,10 @@ export function statusPageFrom(pageTitle: string | null | undefined) {
     .slice(0, MAX_DISPLAY_NAME_LENGTH)
     .join("")
     .trim();
-  return `"${name || "openstatus"}" <${env.EMAIL_FROM}>`;
+  // Self-hosted deployments point these at a verified Resend domain.
+  const address =
+    process.env.EMAIL_FROM_SUBSCRIBERS?.trim() ||
+    process.env.EMAIL_FROM?.trim() ||
+    SUBSCRIBERS_ADDRESS;
+  return `"${name || "openstatus"}" <${address}>`;
 }
